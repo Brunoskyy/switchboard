@@ -1,0 +1,200 @@
+// Switchboard — feature flag platform
+// Tenancy model: Organization is the tenant boundary. Every query that reaches
+// user data must be scoped through Membership; see src/server/auth/scope.ts.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+enum FlagType {
+  BOOLEAN
+  STRING
+  NUMBER
+  JSON
+}
+
+enum AuditAction {
+  CREATED
+  UPDATED
+  ARCHIVED
+  RESTORED
+  TOGGLED
+  ROLLOUT_CHANGED
+  RULES_CHANGED
+  MEMBER_INVITED
+  MEMBER_ROLE_CHANGED
+  MEMBER_REMOVED
+  KEY_CREATED
+  KEY_REVOKED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String
+  avatarColor  String   @default("#6366f1")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships  Membership[]
+  auditEvents  AuditEvent[]
+  createdFlags Flag[]       @relation("FlagCreatedBy")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  projects    Project[]
+  auditEvents AuditEvent[]
+}
+
+model Membership {
+  id        String   @id @default(cuid())
+  role      Role     @default(MEMBER)
+  userId    String
+  orgId     String
+  createdAt DateTime @default(now())
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model Project {
+  id        String   @id @default(cuid())
+  name      String
+  key       String
+  orgId     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  environments Environment[]
+  flags        Flag[]
+
+  @@unique([orgId, key])
+}
+
+model Environment {
+  id        String @id @default(cuid())
+  name      String
+  key       String
+  color     String @default("#64748b")
+  sortOrder Int    @default(0)
+  projectId String
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  configs FlagConfig[]
+  sdkKeys SdkKey[]
+
+  @@unique([projectId, key])
+}
+
+model Flag {
+  id          String   @id @default(cuid())
+  key         String
+  name        String
+  description String   @default("")
+  type        FlagType @default(BOOLEAN)
+  archived    Boolean  @default(false)
+  tags        String[]
+  projectId   String
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdBy User?        @relation("FlagCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  variants  Variant[]
+  configs   FlagConfig[]
+
+  @@unique([projectId, key])
+  @@index([projectId, archived])
+}
+
+model Variant {
+  id        String @id @default(cuid())
+  flagId    String
+  key       String
+  name      String
+  value     Json
+  sortOrder Int    @default(0)
+
+  flag Flag @relation(fields: [flagId], references: [id], onDelete: Cascade)
+
+  @@unique([flagId, key])
+}
+
+// Per-environment state of a flag. `rules` is an ordered array of targeting
+// rules validated by FlagRulesSchema (src/lib/flags/schema.ts) on write, so the
+// Json column never holds a shape the evaluator cannot read.
+model FlagConfig {
+  id                String   @id @default(cuid())
+  flagId            String
+  environmentId     String
+  enabled           Boolean  @default(false)
+  defaultVariantKey String?
+  offVariantKey     String?
+  rollout           Json?
+  rules             Json     @default("[]")
+  updatedAt         DateTime @updatedAt
+
+  flag        Flag        @relation(fields: [flagId], references: [id], onDelete: Cascade)
+  environment Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  @@unique([flagId, environmentId])
+  @@index([environmentId])
+}
+
+model SdkKey {
+  id            String    @id @default(cuid())
+  environmentId String
+  name          String
+  prefix        String
+  hashedKey     String
+  lastUsedAt    DateTime?
+  revokedAt     DateTime?
+  createdAt     DateTime  @default(now())
+
+  environment Environment @relation(fields: [environmentId], references: [id], onDelete: Cascade)
+
+  @@index([environmentId])
+}
+
+model AuditEvent {
+  id             String      @id @default(cuid())
+  orgId          String
+  actorId        String?
+  action         AuditAction
+  entityType     String
+  entityId       String
+  entityLabel    String      @default("")
+  environmentKey String?
+  diff           Json?
+  createdAt      DateTime    @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actor User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt])
+}
