@@ -1,10 +1,14 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 
+import { Prisma } from '@/generated/prisma/client'
 import { AuditAction, FlagType } from '@/generated/prisma/enums'
 import { db } from '@/lib/db'
+import { describeRollout, rulesFingerprint } from '@/lib/flags/diff'
+import type { Rollout } from '@/lib/flags/types'
 import { FlagKeySchema, FlagRulesSchema, RolloutSchema } from '@/lib/flags/schema'
 import {
   PermissionError,
@@ -29,12 +33,30 @@ const ok: ActionResult = { ok: true }
  * gets a generic string rather than a stack trace.
  */
 function toResult(error: unknown): ActionResult {
+  // `redirect()` and `notFound()` work by throwing. Without this, an expired
+  // session would be caught here and shown as "something went wrong" forever
+  // instead of sending the user to the login page.
+  unstable_rethrow(error)
+
   if (error instanceof PermissionError) return { ok: false, error: error.message }
   if (error instanceof z.ZodError) {
     return { ok: false, fieldErrors: z.flattenError(error).fieldErrors }
   }
   console.error('[flags/actions]', error)
   return { ok: false, error: 'Something went wrong. Please try again.' }
+}
+
+/**
+ * Revalidates both places a flag is rendered.
+ *
+ * The list and the detail page are separate routes, so revalidating only the
+ * list leaves the editor holding a stale `initial` prop — it keeps reporting
+ * unsaved changes after a successful save, and Discard reverts to the state
+ * from before it.
+ */
+function revalidateFlag(orgSlug: string, projectKey: string, flagKey?: string) {
+  revalidatePath(`/${orgSlug}/${projectKey}`)
+  if (flagKey) revalidatePath(`/${orgSlug}/${projectKey}/flags/${flagKey}`)
 }
 
 const ScopeSchema = z.object({
@@ -91,7 +113,7 @@ export async function toggleFlag(
       }),
     ])
 
-    revalidatePath(`/${orgSlug}/${projectKey}`)
+    revalidateFlag(orgSlug, projectKey, flagKey)
     return ok
   } catch (error) {
     return toResult(error)
@@ -181,7 +203,7 @@ export async function createFlag(raw: unknown): Promise<ActionResult & { flagKey
       })
     })
 
-    revalidatePath(`/${input.orgSlug}/${input.projectKey}`)
+    revalidateFlag(input.orgSlug, input.projectKey, input.key)
     return { ok: true, flagKey: input.key }
   } catch (error) {
     return toResult(error)
@@ -236,13 +258,31 @@ export async function updateTargeting(raw: unknown): Promise<ActionResult> {
     })
 
     const previousRuleCount = Array.isArray(previous?.rules) ? previous.rules.length : 0
+    const previousRollout = describeRollout((previous?.rollout ?? null) as Rollout | null)
+    const nextRollout = describeRollout(input.rollout)
+
+    const rulesChanged = rulesFingerprint(previous?.rules) !== rulesFingerprint(input.rules)
+    const rolloutChanged = previousRollout !== nextRollout
+
+    // Report what actually moved. Always writing RULES_CHANGED made the audit
+    // log's "Rollout changed" filter an option no real event could match.
+    const action =
+      rolloutChanged && !rulesChanged ? AuditAction.ROLLOUT_CHANGED : AuditAction.RULES_CHANGED
+
+    const diff = {
+      ...(rulesChanged ? { rules: { from: previousRuleCount, to: input.rules.length } } : {}),
+      ...(rolloutChanged ? { rollout: { from: previousRollout, to: nextRollout } } : {}),
+    }
 
     await db.$transaction([
       db.flagConfig.update({
         where: { flagId_environmentId: { flagId: flag.id, environmentId: environment.id } },
         data: {
           rules: input.rules,
-          rollout: input.rollout ?? undefined,
+          // Prisma reads `undefined` as "leave this column alone", so turning a
+          // rollout off has to say DbNull explicitly or the old split survives
+          // the save.
+          rollout: input.rollout ?? Prisma.DbNull,
           defaultVariantKey: input.defaultVariantKey,
           offVariantKey: input.offVariantKey,
         },
@@ -251,17 +291,17 @@ export async function updateTargeting(raw: unknown): Promise<ActionResult> {
         data: {
           orgId: scope.org.id,
           actorId: scope.user.id,
-          action: AuditAction.RULES_CHANGED,
+          action,
           entityType: 'FlagConfig',
           entityId: flag.id,
           entityLabel: flag.key,
           environmentKey: environment.key,
-          diff: { rules: { from: previousRuleCount, to: input.rules.length } },
+          diff,
         },
       }),
     ])
 
-    revalidatePath(`/${input.orgSlug}/${input.projectKey}`)
+    revalidateFlag(input.orgSlug, input.projectKey, input.flagKey)
     return ok
   } catch (error) {
     return toResult(error)
@@ -302,7 +342,7 @@ export async function setFlagArchived(raw: unknown): Promise<ActionResult> {
       }),
     ])
 
-    revalidatePath(`/${input.orgSlug}/${input.projectKey}`)
+    revalidateFlag(input.orgSlug, input.projectKey, input.flagKey)
     return ok
   } catch (error) {
     return toResult(error)

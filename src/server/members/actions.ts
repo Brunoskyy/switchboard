@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 
 import { AuditAction, Role } from '@/generated/prisma/enums'
@@ -15,6 +16,10 @@ export interface ActionResult {
 }
 
 function toResult(error: unknown): ActionResult {
+  // `redirect()` and `notFound()` signal by throwing; catching them here would
+  // turn an expired session into a permanent generic error.
+  unstable_rethrow(error)
+
   if (error instanceof PermissionError) return { ok: false, error: error.message }
   if (error instanceof z.ZodError) {
     return { ok: false, fieldErrors: z.flattenError(error).fieldErrors }
@@ -24,11 +29,30 @@ function toResult(error: unknown): ActionResult {
 }
 
 /**
- * Loads everything the membership rules need, in one place.
+ * Counts the org's owners and holds a lock on those rows until the surrounding
+ * transaction ends.
  *
- * `ownerCount` is read inside the same transaction as the write it guards —
- * see the callers. Read separately, two owners leaving at once could each see
- * a count of two and both succeed, leaving the org with none.
+ * Being inside the transaction is not enough on its own: Prisma runs at READ
+ * COMMITTED and a plain `count()` takes no locks, so two owners leaving at the
+ * same moment would each read two, each delete a different row, and both
+ * commit — leaving nobody able to grant the role back. `FOR UPDATE` locks every
+ * owner row, so the second transaction blocks, then re-reads a count of one and
+ * is refused.
+ */
+async function lockedOwnerCount(
+  tx: Pick<typeof db, '$queryRaw'>,
+  orgId: string,
+): Promise<number> {
+  const rows = await tx.$queryRaw<Array<{ id: string }>>`
+    SELECT "id" FROM "Membership"
+    WHERE "orgId" = ${orgId} AND "role" = 'OWNER'::"Role"
+    FOR UPDATE
+  `
+  return rows.length
+}
+
+/**
+ * Loads everything the membership rules need, in one place.
  */
 async function loadContext(orgSlug: string, membershipId: string) {
   const scope = await requireOrg(orgSlug)
@@ -60,9 +84,7 @@ export async function changeMemberRole(raw: unknown): Promise<ActionResult> {
     if (!membership) return { ok: false, error: 'That member is no longer in this organization.' }
 
     const denial = await db.$transaction(async (tx) => {
-      const ownerCount = await tx.membership.count({
-        where: { orgId: scope.org.id, role: Role.OWNER },
-      })
+      const ownerCount = await lockedOwnerCount(tx, scope.org.id)
 
       const reason = checkRoleChange(
         {
@@ -119,9 +141,7 @@ export async function removeMember(raw: unknown): Promise<ActionResult> {
     if (!membership) return { ok: true }
 
     const denial = await db.$transaction(async (tx) => {
-      const ownerCount = await tx.membership.count({
-        where: { orgId: scope.org.id, role: Role.OWNER },
-      })
+      const ownerCount = await lockedOwnerCount(tx, scope.org.id)
 
       const reason = checkRemoval({
         actorRole: scope.role,
@@ -209,22 +229,26 @@ export async function addMember(raw: unknown): Promise<ActionResult> {
       return { ok: false, fieldErrors: { email: ['They are already in this organization.'] } }
     }
 
-    await db.$transaction([
-      db.membership.create({
+    // Interactive so the event can name the membership it created, matching
+    // what MEMBER_ROLE_CHANGED and MEMBER_REMOVED record.
+    await db.$transaction(async (tx) => {
+      const membership = await tx.membership.create({
         data: { userId: user.id, orgId: scope.org.id, role: input.role },
-      }),
-      db.auditEvent.create({
+        select: { id: true },
+      })
+
+      await tx.auditEvent.create({
         data: {
           orgId: scope.org.id,
           actorId: scope.user.id,
           action: AuditAction.MEMBER_INVITED,
           entityType: 'Membership',
-          entityId: user.id,
+          entityId: membership.id,
           entityLabel: email,
           diff: { role: input.role },
         },
-      }),
-    ])
+      })
+    })
 
     revalidatePath(`/${input.orgSlug}/members`)
     return { ok: true }

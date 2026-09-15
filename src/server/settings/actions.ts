@@ -1,6 +1,7 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
+import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 
 import { AuditAction } from '@/generated/prisma/enums'
@@ -15,6 +16,10 @@ export interface ActionResult {
 }
 
 function toResult(error: unknown): ActionResult {
+  // `redirect()` and `notFound()` signal by throwing; catching them here would
+  // turn an expired session into a permanent generic error.
+  unstable_rethrow(error)
+
   if (error instanceof PermissionError) return { ok: false, error: error.message }
   if (error instanceof z.ZodError) {
     return { ok: false, fieldErrors: z.flattenError(error).fieldErrors }
@@ -158,27 +163,32 @@ export async function createSdkKey(
 
     const generated = generateSdkKey(environment.key)
 
-    await db.$transaction([
-      db.sdkKey.create({
+    // Interactive, so the audit event can record the key's own id — without it
+    // every key created in an environment shares one entityId and KEY_CREATED
+    // cannot be joined to the matching KEY_REVOKED.
+    await db.$transaction(async (tx) => {
+      const key = await tx.sdkKey.create({
         data: {
           environmentId: environment.id,
           name: input.name,
           prefix: generated.prefix,
           hashedKey: generated.hashedKey,
         },
-      }),
-      db.auditEvent.create({
+        select: { id: true },
+      })
+
+      await tx.auditEvent.create({
         data: {
           orgId: scope.org.id,
           actorId: scope.user.id,
           action: AuditAction.KEY_CREATED,
           entityType: 'SdkKey',
-          entityId: environment.id,
+          entityId: key.id,
           entityLabel: input.name,
           environmentKey: environment.key,
         },
-      }),
-    ])
+      })
+    })
 
     revalidatePath(`/${input.orgSlug}/settings`)
 

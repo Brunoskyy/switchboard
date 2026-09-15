@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { db } from '@/lib/db'
 import { Role } from '@/generated/prisma/enums'
 import { hashPassword, verifyPassword } from '@/server/auth/password'
-import { createSession, destroySession } from '@/server/auth/session'
+import { createSession, destroySession, readSession } from '@/server/auth/session'
 
 export interface AuthFormState {
   error?: string
@@ -117,6 +117,12 @@ export async function signup(
 
   const slug = await uniqueSlug(parsed.data.organization)
 
+  // Hashed before the transaction opens. bcrypt at cost 12 takes ~250ms, and
+  // spending that inside a transaction holds a pooled connection the whole
+  // time — under a burst of signups that pushes other transactions past
+  // Prisma's maxWait and they fail to start at all.
+  const passwordHash = await hashPassword(parsed.data.password)
+
   // One transaction: a user without an org, or an org without an owner, would
   // both be unreachable states for the rest of the app.
   const { user, orgSlug } = await db.$transaction(async (tx) => {
@@ -124,7 +130,7 @@ export async function signup(
       data: {
         email,
         name: parsed.data.name,
-        passwordHash: await hashPassword(parsed.data.password),
+        passwordHash,
       },
       select: { id: true, email: true },
     })
@@ -138,13 +144,7 @@ export async function signup(
           create: {
             name: 'Default',
             key: 'default',
-            environments: {
-              create: [
-                { key: 'development', name: 'Development', color: '#22c55e', sortOrder: 0 },
-                { key: 'staging', name: 'Staging', color: '#f59e0b', sortOrder: 1 },
-                { key: 'production', name: 'Production', color: '#ef4444', sortOrder: 2 },
-              ],
-            },
+            environments: { create: DEFAULT_ENVIRONMENTS },
           },
         },
       },
@@ -156,6 +156,53 @@ export async function signup(
 
   await createSession({ userId: user.id, email: user.email })
   redirect(`/${orgSlug}`)
+}
+
+const DEFAULT_ENVIRONMENTS = [
+  { key: 'development', name: 'Development', color: '#22c55e', sortOrder: 0 },
+  { key: 'staging', name: 'Staging', color: '#f59e0b', sortOrder: 1 },
+  { key: 'production', name: 'Production', color: '#ef4444', sortOrder: 2 },
+]
+
+const CreateOrgSchema = z.object({
+  name: z.string().min(2, 'Name your organization').max(60),
+})
+
+/**
+ * Creates an organization for a signed-in user who has none.
+ *
+ * Reachable from /onboarding, which is where both the root route and a
+ * successful login send someone whose last membership was removed.
+ */
+export async function createOrganization(
+  _prev: AuthFormState,
+  formData: FormData,
+): Promise<AuthFormState> {
+  const session = await readSession()
+  if (!session) redirect('/login')
+
+  const parsed = CreateOrgSchema.safeParse({ name: formData.get('name') })
+  if (!parsed.success) {
+    return { fieldErrors: z.flattenError(parsed.error).fieldErrors }
+  }
+
+  const org = await db.organization.create({
+    data: {
+      name: parsed.data.name,
+      slug: await uniqueSlug(parsed.data.name),
+      memberships: { create: { userId: session.userId, role: Role.OWNER } },
+      projects: {
+        create: {
+          name: 'Default',
+          key: 'default',
+          environments: { create: DEFAULT_ENVIRONMENTS },
+        },
+      },
+    },
+    select: { slug: true },
+  })
+
+  redirect(`/${org.slug}`)
 }
 
 export async function logout(): Promise<never> {
