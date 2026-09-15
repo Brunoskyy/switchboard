@@ -1,6 +1,7 @@
 'use client'
 
 import { Trash2 } from 'lucide-react'
+import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -20,24 +21,33 @@ function takesValues(operator: Operator): boolean {
 }
 
 /**
- * Values are edited as a comma-separated list. Numbers are kept as numbers so
- * `gt`/`lt` compare numerically instead of lexicographically ("9" > "10").
+ * Only set membership reads more than one value; every other operator uses
+ * `values[0]`.
+ *
+ * This is why the list operators get their own input. Comma-splitting
+ * everything corrupted any single value that legitimately contains a comma —
+ * the regex `^(alpha|beta){1,3}$` became two values, neither of them a valid
+ * pattern, and the condition then silently never matched.
  */
-function parseValues(raw: string): AttributeValue[] {
+function takesList(operator: Operator): boolean {
+  return operator === 'in' || operator === 'not_in'
+}
+
+/** Numbers stay numbers so `gt`/`lt` compare numerically, not lexically. */
+function coerce(raw: string): AttributeValue {
+  if (raw === 'true') return true
+  if (raw === 'false') return false
+
+  const asNumber = Number(raw)
+  return raw.trim() !== '' && !Number.isNaN(asNumber) ? asNumber : raw
+}
+
+function parseList(raw: string): AttributeValue[] {
   return raw
     .split(',')
     .map((part) => part.trim())
     .filter((part) => part.length > 0)
-    .map((part) => {
-      if (part === 'true') return true
-      if (part === 'false') return false
-      const asNumber = Number(part)
-      return part !== '' && !Number.isNaN(asNumber) ? asNumber : part
-    })
-}
-
-function formatValues(values: AttributeValue[]): string {
-  return values.join(', ')
+    .map(coerce)
 }
 
 interface ConditionRowProps {
@@ -62,6 +72,20 @@ export function ConditionRow({
   const attributeId = `${ruleId}-cond-${index}-attribute`
   const operatorId = `${ruleId}-cond-${index}-operator`
   const valuesId = `${ruleId}-cond-${index}-values`
+
+  const isList = takesList(condition.operator)
+
+  /*
+    The list input keeps its own text while it has focus. Parsing on every
+    keystroke and echoing the parsed array back would delete the separator the
+    moment it is typed, so "us, ca" could never be reached. Rows are keyed by
+    condition id, so this buffer never outlives the condition it belongs to.
+  */
+  const [listText, setListText] = React.useState(() => condition.values.join(', '))
+  const [editingList, setEditingList] = React.useState(false)
+
+  const listValue = editingList ? listText : condition.values.join(', ')
+  const singleValue = condition.values[0] === undefined ? '' : String(condition.values[0])
 
   return (
     <div className="flex flex-wrap items-end gap-2">
@@ -108,16 +132,39 @@ export function ConditionRow({
       {takesValues(condition.operator) ? (
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <label htmlFor={valuesId} className="sr-only">
-            Values for condition {index + 1}
+            {isList ? `Values for condition ${index + 1}` : `Value for condition ${index + 1}`}
           </label>
-          <Input
-            id={valuesId}
-            defaultValue={formatValues(condition.values)}
-            onChange={(event) => onChange({ values: parseValues(event.target.value) })}
-            placeholder="comma, separated, values"
-            disabled={disabled}
-            className="font-mono text-xs"
-          />
+          {isList ? (
+            <Input
+              id={valuesId}
+              value={listValue}
+              onFocus={() => {
+                setListText(condition.values.join(', '))
+                setEditingList(true)
+              }}
+              onBlur={() => setEditingList(false)}
+              onChange={(event) => {
+                setListText(event.target.value)
+                onChange({ values: parseList(event.target.value) })
+              }}
+              placeholder="comma, separated"
+              disabled={disabled}
+              className="font-mono text-xs"
+            />
+          ) : (
+            <Input
+              id={valuesId}
+              value={singleValue}
+              onChange={(event) =>
+                onChange({
+                  values: event.target.value === '' ? [] : [coerce(event.target.value)],
+                })
+              }
+              placeholder={condition.operator === 'matches' ? '^prefix-.*$' : 'value'}
+              disabled={disabled}
+              className="font-mono text-xs"
+            />
+          )}
         </div>
       ) : null}
 

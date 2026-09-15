@@ -34,6 +34,12 @@ export type Operator =
 export type AttributeValue = string | number | boolean
 
 export interface Condition {
+  /**
+   * Stable across edits, so the editor can key a row by the condition itself
+   * rather than by its position. Optional because configs written before this
+   * existed are still valid; the editor assigns one on load.
+   */
+  id?: string
   attribute: string
   operator: Operator
   /** Ignored by `exists` / `not_exists`. */

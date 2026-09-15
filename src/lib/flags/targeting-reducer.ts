@@ -39,15 +39,45 @@ export type TargetingAction =
   | { type: 'setRolloutBucketBy'; bucketBy: string }
   | { type: 'reset'; state: TargetingState }
 
+/** Ids only need to be unique within one config; they are not database keys. */
+function newId(prefix: string): string {
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 const emptyCondition = (): Condition => ({
+  id: newId('cond'),
   attribute: '',
   operator: 'eq',
   values: [],
 })
 
-/** Ids only need to be unique within one config; they are not database keys. */
 function newRuleId(): string {
-  return `rule-${Math.random().toString(36).slice(2, 10)}`
+  return newId('rule')
+}
+
+/**
+ * Gives every condition an id.
+ *
+ * Saved configs can predate the id field, and the editor keys rows by it — a
+ * row keyed by position gets recycled when its neighbour is deleted, which
+ * leaves the previous condition's text sitting in the new row's inputs.
+ */
+export function withConditionIds(state: TargetingState): TargetingState {
+  let changed = false
+
+  const rules = state.rules.map((rule) => {
+    if (rule.conditions.every((condition) => condition.id)) return rule
+
+    changed = true
+    return {
+      ...rule,
+      conditions: rule.conditions.map((condition) =>
+        condition.id ? condition : { ...condition, id: newId('cond') },
+      ),
+    }
+  })
+
+  return changed ? { ...state, rules } : state
 }
 
 function replaceAt<T>(items: T[], index: number, next: T): T[] {

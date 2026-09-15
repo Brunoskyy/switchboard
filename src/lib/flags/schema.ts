@@ -52,6 +52,7 @@ const AttributeValueSchema = z.union([z.string(), z.number(), z.boolean()])
 
 export const ConditionSchema = z
   .object({
+    id: z.string().min(1).max(64).optional(),
     attribute: z.string().min(1, 'Pick an attribute').max(120),
     operator: z.enum(OPERATORS),
     values: z.array(AttributeValueSchema).max(500, 'At most 500 values per condition'),

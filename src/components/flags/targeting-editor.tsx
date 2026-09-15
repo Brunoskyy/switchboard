@@ -1,6 +1,7 @@
 'use client'
 
 import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import * as React from 'react'
 import { toast } from 'sonner'
 
@@ -21,6 +22,7 @@ import { Switch } from '@/components/ui/switch'
 import {
   targetingReducer,
   totalWeight,
+  withConditionIds,
   type TargetingState,
 } from '@/lib/flags/targeting-reducer'
 import { updateTargeting } from '@/server/flags/actions'
@@ -55,14 +57,20 @@ export function TargetingEditor({
   initial,
   editable,
 }: TargetingEditorProps) {
-  const [state, dispatch] = React.useReducer(targetingReducer, initial)
+  const router = useRouter()
+
+  // Saved configs can predate condition ids; rows are keyed by them, so they
+  // are filled in before anything renders.
+  const baseline = React.useMemo(() => withConditionIds(initial), [initial])
+
+  const [state, dispatch] = React.useReducer(targetingReducer, baseline)
   const [saving, startSaving] = React.useTransition()
 
   // Cheap structural comparison. The editor holds at most a few dozen rules,
   // so this is far simpler than threading a dirty flag through every action.
   const dirty = React.useMemo(
-    () => JSON.stringify(stripEnabled(state)) !== JSON.stringify(stripEnabled(initial)),
-    [state, initial],
+    () => JSON.stringify(stripEnabled(state)) !== JSON.stringify(stripEnabled(baseline)),
+    [state, baseline],
   )
 
   const weight = totalWeight(state.rollout)
@@ -91,6 +99,11 @@ export function TargetingEditor({
         return
       }
 
+      // revalidatePath marks the server cache stale, but this component keeps
+      // rendering against the `initial` prop it already has. Without the
+      // refresh the footer still claims unsaved changes after a successful
+      // save, and Discard would roll back to the pre-save config.
+      router.refresh()
       toast.success(`Targeting saved for ${environmentName}.`)
     })
   }
@@ -222,7 +235,7 @@ export function TargetingEditor({
                 <div className="flex flex-col gap-2">
                   {rule.conditions.map((condition, conditionIndex) => (
                     <ConditionRow
-                      key={`${rule.id}-${conditionIndex}`}
+                      key={condition.id ?? `${rule.id}-${conditionIndex}`}
                       condition={condition}
                       index={conditionIndex}
                       ruleId={rule.id}
@@ -432,7 +445,7 @@ export function TargetingEditor({
           <Button
             type="button"
             variant="secondary"
-            onClick={() => dispatch({ type: 'reset', state: initial })}
+            onClick={() => dispatch({ type: 'reset', state: baseline })}
             disabled={!dirty || saving}
           >
             Discard
