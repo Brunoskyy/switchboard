@@ -99,9 +99,11 @@ request. Bcrypt for passwords, the one case it exists for.
 
 **The last owner can't be removed or demoted.** That rule and its siblings live
 in `src/lib/members/rules.ts` as tested pure functions, not inline in a handler.
-The owner count is read inside the same transaction as the write it guards, so
-two owners leaving simultaneously can't both see a count of two and both
-succeed.
+Being inside a transaction isn't enough to make it safe, though: Prisma runs at
+READ COMMITTED and `count()` takes no locks, so two owners leaving at the same
+moment would each read two, delete different rows and both commit. The count
+runs as `SELECT … FOR UPDATE` over the owner rows, so the second transaction
+blocks, re-reads one, and gets refused.
 
 **Accessibility shaped the components, not the other way round.** Radix
 underneath, so focus and ARIA are correct instead of approximated. `Field` uses
@@ -116,13 +118,15 @@ and `prefers-reduced-motion`.
 npm test
 ```
 
-75 tests, no database and no mocks, aimed at the modules where the logic lives.
+88 tests, no database and no mocks, aimed at the modules where the logic lives.
 
 The evaluator gets the most: operator semantics, fail-closed behaviour on bad
 regex and non-numeric input, rollout stability, and a distribution test that
 asserts a 10% rollout lands between 8.5% and 11.5% over 20k samples. That last
 one is what catches a hash that clusters. Then the targeting reducer, the
-membership rules, and SDK key generation.
+membership rules, SDK key generation, and the config diffing — which has two
+traps worth pinning down, since `jsonb` reorders keys on write and the editor
+mints condition ids on load.
 
 ## Layout
 

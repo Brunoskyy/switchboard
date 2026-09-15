@@ -26,12 +26,20 @@ const listeners = new Set<() => void>()
 
 function subscribe(onChange: () => void) {
   listeners.add(onChange)
+
   // `storage` fires in *other* tabs; our own writes notify through `listeners`.
-  window.addEventListener('storage', onChange)
+  // Those tabs also have to repaint: without this the dropdown label would
+  // update to "Dark" while the page stayed light until a reload.
+  const onStorage = () => {
+    applyToDocument(getSnapshot())
+    onChange()
+  }
+
+  window.addEventListener('storage', onStorage)
 
   return () => {
     listeners.delete(onChange)
-    window.removeEventListener('storage', onChange)
+    window.removeEventListener('storage', onStorage)
   }
 }
 

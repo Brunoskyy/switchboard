@@ -67,6 +67,15 @@ export function SdkKeysPanel({
   /** Held only until the dialog closes; the server never stores it. */
   const [revealed, setRevealed] = React.useState<string | null>(null)
 
+  // The settings page renders one panel per project, so hard-coded ids would
+  // collide: clicking a label in the second project's dialog would focus the
+  // first project's hidden input.
+  const uid = React.useId()
+  const nameId = `${uid}-key-name`
+  const environmentId = `${uid}-key-environment`
+  const newKeyDescriptionId = `${uid}-new-key-description`
+  const revealedDescriptionId = `${uid}-revealed-key-description`
+
   const onCreate = (event: React.FormEvent) => {
     event.preventDefault()
     setError(null)
@@ -174,10 +183,10 @@ export function SdkKeysPanel({
       </Card>
 
       <Dialog open={creating} onOpenChange={setCreating}>
-        <DialogContent aria-describedby="new-key-description">
+        <DialogContent aria-describedby={newKeyDescriptionId}>
           <DialogHeader>
             <DialogTitle>New SDK key</DialogTitle>
-            <DialogDescription id="new-key-description">
+            <DialogDescription id={newKeyDescriptionId}>
               Name it after where it will be used, so you know what you are revoking later.
             </DialogDescription>
           </DialogHeader>
@@ -194,9 +203,9 @@ export function SdkKeysPanel({
               ) : null}
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="key-name">Name</Label>
+                <Label htmlFor={nameId}>Name</Label>
                 <Input
-                  id="key-name"
+                  id={nameId}
                   autoFocus
                   value={name}
                   onChange={(event) => setName(event.target.value)}
@@ -206,9 +215,9 @@ export function SdkKeysPanel({
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor="key-environment">Environment</Label>
+                <Label htmlFor={environmentId}>Environment</Label>
                 <Select value={environmentKey} onValueChange={setEnvironmentKey}>
-                  <SelectTrigger id="key-environment">
+                  <SelectTrigger id={environmentId}>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -235,10 +244,10 @@ export function SdkKeysPanel({
       </Dialog>
 
       <Dialog open={revealed !== null} onOpenChange={(open) => !open && setRevealed(null)}>
-        <DialogContent aria-describedby="revealed-key-description">
+        <DialogContent aria-describedby={revealedDescriptionId}>
           <DialogHeader>
             <DialogTitle>Copy your key now</DialogTitle>
-            <DialogDescription id="revealed-key-description">
+            <DialogDescription id={revealedDescriptionId}>
               This is the only time it is shown. Only a hash is stored, so a lost key has to be
               revoked and replaced rather than recovered.
             </DialogDescription>

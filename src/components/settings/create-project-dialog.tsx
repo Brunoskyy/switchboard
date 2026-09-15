@@ -62,8 +62,7 @@ export function CreateProjectDialog({ orgSlug }: { orgSlug: string }) {
       }
 
       toast.success(`${name} created with three environments.`)
-      reset()
-      setOpen(false)
+      onOpenChange(false)
       router.push(`/${orgSlug}/${result.projectKey}`)
     })
   }
@@ -75,14 +74,13 @@ export function CreateProjectDialog({ orgSlug }: { orgSlug: string }) {
     setError(null)
   }
 
+  const onOpenChange = (next: boolean) => {
+    setOpen(next)
+    if (!next) reset()
+  }
+
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next)
-        if (!next) reset()
-      }}
-    >
+    <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogTrigger asChild>
         <Button variant="secondary" size="sm">
           <Plus aria-hidden="true" /> New project
@@ -140,7 +138,7 @@ export function CreateProjectDialog({ orgSlug }: { orgSlug: string }) {
           </DialogBody>
 
           <DialogFooter>
-            <Button type="button" variant="secondary" onClick={() => setOpen(false)}>
+            <Button type="button" variant="secondary" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button type="submit" loading={pending}>
