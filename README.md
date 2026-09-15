@@ -24,7 +24,10 @@ of a backend that is real rather than mocked.
   for A/B/n tests.
 - **Roles.** Owner / Admin / Member / Viewer, enforced server-side on every
   mutation, reflected in the UI so a Viewer sees why a control is disabled.
-- **Audit trail.** Who changed what, in which environment, with a before/after.
+- **Audit trail.** Who changed what, in which environment, with a before/after
+  diff. Filterable by action, environment and person, all held in the URL.
+- **SDK keys.** Generated per environment, shown once, stored only as a hash,
+  revocable.
 
 ## Running it
 
@@ -70,10 +73,13 @@ src/
     hash.ts        Murmur3 bucketing
     evaluate.ts    The evaluator
     schema.ts      Zod schemas guarding the Json columns
+  lib/members/     Who may change whom — pure, unit tested
   server/
     auth/          Password hashing, JWT session cookie, auth actions
     tenancy/       Org scoping and the permission model
     flags/         Mutations, each one scoped + permission-checked + audited
+    members/       Role changes and removals
+    settings/      Org, projects and SDK key generation
   components/
     ui/            Primitives over Radix
     flags/         Feature components
@@ -99,6 +105,21 @@ membership*, and every later query filters on the resolved id. No mutation ever
 accepts an org or project id from the client. A missing membership returns 404
 rather than 403, because "this org exists but you cannot see it" leaks the
 customer list.
+
+**The last owner cannot be removed or demoted.** That rule, and the rest of
+who-may-change-whom, lives in `src/lib/members/rules.ts` as pure functions
+rather than inline in a handler — an organization locking itself out is the
+kind of bug that only shows up on the path nobody reads. The count that guards
+it is read inside the same transaction as the write, so two owners leaving
+simultaneously cannot both see a count of two and both succeed. The UI runs the
+same functions, but only to explain a disabled control; the server check is the
+one that decides.
+
+**SDK keys are hashed with SHA-256, not bcrypt.** bcrypt exists to make
+low-entropy secrets — passwords people choose — expensive to brute force. A
+generated key carries 256 bits of CSPRNG entropy, so there is nothing to brute
+force and a slow hash would only tax every SDK request. Passwords in this same
+app do use bcrypt, for the opposite reason.
 
 **Bucketing is Murmur3, not a cryptographic hash.** It has to be deterministic
 across the server, the SDK and the UI preview, and uniform enough that a 10%
@@ -139,11 +160,17 @@ Not a retrofit; it is the reason several components are shaped the way they are.
 npm test
 ```
 
-The suite concentrates on the evaluation engine, where the logic actually lives:
-operator semantics including array attributes and the negative-operator case
-(`not_in` means *none of these*), fail-closed behaviour on invalid regex and
-non-numeric comparisons, rollout stability and distribution, and the
-degradation paths that must never throw.
+75 tests, all against pure modules — no database, no rendering, no mocks:
+
+- **The evaluator.** Operator semantics including array attributes and the
+  negative-operator case (`not_in` means *none of these*), fail-closed
+  behaviour on invalid regex and non-numeric comparisons, rollout stability and
+  distribution, and the degradation paths that must never throw.
+- **The targeting reducer.** Rule ordering is behaviour, not decoration, and
+  rollout weights have an invariant (exactly 100) worth asserting directly.
+- **Membership rules.** Every way an org could lock itself out.
+- **SDK key generation.** Uniqueness, prefix handling, and that a near miss
+  fails rather than matching on a prefix.
 
 ## Known gaps
 
@@ -152,6 +179,9 @@ Honest list of what a production deployment would still need:
 - No SDK yet. The evaluator is written to be extracted into one (pure, no
   imports from the app), but the delivery layer — polling or streaming config to
   clients — is not built.
-- SDK keys are modelled and hashed but there is no public evaluation endpoint.
+- SDK keys can be created and revoked, but nothing authenticates against them
+  yet — there is no public evaluation endpoint for them to open.
 - No scheduled or approval-gated changes.
-- Member invitations are modelled but the email side is not wired up.
+- Adding a member requires them to already have an account. Emailed invitations
+  are not built, and the dialog says so rather than pretending otherwise.
+- Environments are created with a project and cannot yet be added or renamed.
