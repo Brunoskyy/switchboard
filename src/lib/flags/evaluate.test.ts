@@ -103,17 +103,28 @@ describe('resolveRollout', () => {
     ],
   }
 
-  it('rejects weights that do not sum to 100', () => {
-    expect(resolveRollout({ ...rollout, buckets: [{ variantKey: 'on', weight: 60 }] }, 'f', ctx('u')))
-      .toBeNull()
+  /** Narrowing helper: the variant a successful resolution served. */
+  const served = (result: ReturnType<typeof resolveRollout>) =>
+    result.status === 'ok' ? result.variantKey : null
+
+  it('reports weights that do not sum to 100 as a misconfiguration', () => {
+    const result = resolveRollout(
+      { ...rollout, buckets: [{ variantKey: 'on', weight: 60 }] },
+      'f',
+      ctx('u'),
+    )
+    expect(result.status).toBe('invalid')
   })
 
-  it('rejects an empty bucket list', () => {
-    expect(resolveRollout({ ...rollout, buckets: [] }, 'f', ctx('u'))).toBeNull()
+  it('reports an empty bucket list as a misconfiguration', () => {
+    expect(resolveRollout({ ...rollout, buckets: [] }, 'f', ctx('u')).status).toBe('invalid')
   })
 
-  it('returns null when the bucketBy attribute is absent', () => {
-    expect(resolveRollout({ ...rollout, bucketBy: 'accountId' }, 'f', ctx('u'))).toBeNull()
+  it('separates a missing bucketBy attribute from a broken config', () => {
+    // An anonymous visitor against a rollout bucketed by accountId is an
+    // ordinary miss, not something anyone needs to go and fix.
+    expect(resolveRollout({ ...rollout, bucketBy: 'accountId' }, 'f', ctx('u')).status)
+      .toBe('no-identity')
   })
 
   it('is stable for the same identity', () => {
@@ -126,14 +137,14 @@ describe('resolveRollout', () => {
     const byAccount = { ...rollout, bucketBy: 'accountId' }
     const one = resolveRollout(byAccount, 'new-checkout', ctx('user-1', { accountId: 'acct-9' }))
     const two = resolveRollout(byAccount, 'new-checkout', ctx('user-2', { accountId: 'acct-9' }))
-    expect(one?.variantKey).toBe(two?.variantKey)
+    expect(served(one)).toBe(served(two))
   })
 
   it('changes the assignment when the seed changes', () => {
     const identities = Array.from({ length: 200 }, (_, i) => `user-${i}`)
-    const withSeedA = identities.map((id) => resolveRollout(rollout, 'f', ctx(id))?.variantKey)
-    const withSeedB = identities.map(
-      (id) => resolveRollout({ ...rollout, seed: 'seed-2' }, 'f', ctx(id))?.variantKey,
+    const withSeedA = identities.map((id) => served(resolveRollout(rollout, 'f', ctx(id))))
+    const withSeedB = identities.map((id) =>
+      served(resolveRollout({ ...rollout, seed: 'seed-2' }, 'f', ctx(id))),
     )
     expect(withSeedA).not.toEqual(withSeedB)
   })
@@ -149,7 +160,7 @@ describe('resolveRollout', () => {
     const sampleSize = 20_000
     let on = 0
     for (let i = 0; i < sampleSize; i++) {
-      if (resolveRollout(tenPercent, 'new-checkout', ctx(`user-${i}`))?.variantKey === 'on') on++
+      if (served(resolveRollout(tenPercent, 'new-checkout', ctx(`user-${i}`))) === 'on') on++
     }
     const share = on / sampleSize
     // Tolerance is wide enough not to flake, tight enough to catch a hash that
@@ -251,6 +262,56 @@ describe('evaluate', () => {
     const result = evaluate<boolean>(booleanFlag, config, ctx('u'))
     expect(result).toMatchObject({ value: true, reason: 'ROLLOUT' })
     expect(result.bucket).toBeGreaterThanOrEqual(0)
+  })
+
+  it('falls through to the default when the context cannot be bucketed', () => {
+    const config: EvaluableConfig = {
+      ...baseConfig,
+      defaultVariantKey: 'off',
+      rollout: {
+        seed: 'r',
+        bucketBy: 'accountId',
+        buckets: [
+          { variantKey: 'on', weight: 100 },
+          { variantKey: 'off', weight: 0 },
+        ],
+      },
+    }
+
+    // No accountId on the context: valid config, ordinary miss.
+    const result = evaluate<boolean>(booleanFlag, config, ctx('u'))
+    expect(result.reason).toBe('DEFAULT')
+    expect(result.error).toBeUndefined()
+  })
+
+  it('still reports genuinely broken rollout weights as an error', () => {
+    const config: EvaluableConfig = {
+      ...baseConfig,
+      rollout: { seed: 'r', buckets: [{ variantKey: 'on', weight: 60 }] },
+    }
+    expect(evaluate(booleanFlag, config, ctx('u')).reason).toBe('ERROR')
+  })
+
+  it('falls through to the default when a matched rule cannot bucket the context', () => {
+    const rules: Rule[] = [
+      {
+        id: 'r1',
+        conditions: [],
+        serve: {
+          rollout: {
+            seed: 's',
+            bucketBy: 'accountId',
+            buckets: [
+              { variantKey: 'on', weight: 100 },
+              { variantKey: 'off', weight: 0 },
+            ],
+          },
+        },
+      },
+    ]
+    const result = evaluate<boolean>(booleanFlag, { ...baseConfig, rules }, ctx('u'))
+    expect(result.reason).toBe('DEFAULT')
+    expect(result.error).toBeUndefined()
   })
 
   it('degrades to the off variant when a rule names an unknown variant', () => {

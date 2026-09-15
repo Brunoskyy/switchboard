@@ -138,33 +138,47 @@ export function evaluateRule(rule: Rule, context: EvaluationContext): boolean {
 }
 
 /**
- * Picks a bucket for `context` and walks the weighted buckets in order.
- * Returns null when the weights are unusable, so the caller can fall back
- * rather than serve an arbitrary variant.
+ * Outcome of bucketing a context.
+ *
+ * `invalid` and `no-identity` are deliberately different. Weights that do not
+ * total 100 are a misconfiguration someone has to fix. A context that simply
+ * lacks the `bucketBy` attribute — an anonymous visitor against a rollout
+ * bucketed by `accountId`, say — is an ordinary miss against a perfectly valid
+ * config, and reporting it as an error would cry wolf on every logged-out user.
  */
+export type RolloutResolution =
+  | { status: 'ok'; variantKey: string; bucket: number }
+  | { status: 'invalid' }
+  | { status: 'no-identity' }
+
+/** Picks a bucket for `context` and walks the weighted buckets in order. */
 export function resolveRollout(
   rollout: Rollout,
   flagKey: string,
   context: EvaluationContext,
-): { variantKey: string; bucket: number } | null {
+): RolloutResolution {
   const total = rollout.buckets.reduce((sum, b) => sum + b.weight, 0)
-  if (rollout.buckets.length === 0 || total !== 100) return null
+  if (rollout.buckets.length === 0 || total !== 100) return { status: 'invalid' }
 
   const identityAttr = rollout.bucketBy
   const rawIdentity = identityAttr ? context.attributes?.[identityAttr] : context.key
   const identity = toComparable(rawIdentity)
-  if (identity === undefined) return null
+  if (identity === undefined) return { status: 'no-identity' }
 
   const bucket = bucketFor(rollout.seed, flagKey, String(identity))
 
   let cursor = 0
   for (const b of rollout.buckets) {
     cursor += b.weight
-    if (bucket < cursor) return { variantKey: b.variantKey, bucket }
+    if (bucket < cursor) return { status: 'ok', variantKey: b.variantKey, bucket }
   }
 
   // Unreachable while the weights sum to 100, but keeps the function total.
-  return { variantKey: rollout.buckets[rollout.buckets.length - 1].variantKey, bucket }
+  return {
+    status: 'ok',
+    variantKey: rollout.buckets[rollout.buckets.length - 1].variantKey,
+    bucket,
+  }
 }
 
 /**
@@ -194,6 +208,12 @@ export function evaluate<T = unknown>(
     ...(error ? { error } : {}),
   })
 
+  const serveDefault = (): EvaluationResult<T> => {
+    const fallthrough = variantValue(config.defaultVariantKey)
+    if (!fallthrough) return fallback('ERROR', 'Config has no usable default variant')
+    return { value: fallthrough.value, variantKey: fallthrough.key, reason: 'DEFAULT' }
+  }
+
   try {
     if (flag.archived) return fallback('FLAG_ARCHIVED')
     if (!config.enabled) return fallback('FLAG_OFF')
@@ -211,7 +231,14 @@ export function evaluate<T = unknown>(
       }
 
       const resolved = resolveRollout(rule.serve.rollout, flag.key, context)
-      if (!resolved) return fallback('ERROR', `Rule ${i} has an invalid rollout`)
+
+      if (resolved.status === 'invalid') {
+        return fallback('ERROR', `Rule ${i} has an invalid rollout`)
+      }
+
+      // The rule matched but this context cannot be bucketed. The rule cannot
+      // decide, so the default does — the same outcome as if no rule matched.
+      if (resolved.status === 'no-identity') return serveDefault()
 
       const served = variantValue(resolved.variantKey)
       if (!served) {
@@ -228,7 +255,9 @@ export function evaluate<T = unknown>(
 
     if (config.rollout) {
       const resolved = resolveRollout(config.rollout, flag.key, context)
-      if (!resolved) return fallback('ERROR', 'Default rollout is invalid')
+
+      if (resolved.status === 'invalid') return fallback('ERROR', 'Default rollout is invalid')
+      if (resolved.status === 'no-identity') return serveDefault()
 
       const served = variantValue(resolved.variantKey)
       if (!served) {
@@ -242,10 +271,7 @@ export function evaluate<T = unknown>(
       }
     }
 
-    const fallthrough = variantValue(config.defaultVariantKey)
-    if (!fallthrough) return fallback('ERROR', 'Config has no usable default variant')
-
-    return { value: fallthrough.value, variantKey: fallthrough.key, reason: 'DEFAULT' }
+    return serveDefault()
   } catch (cause) {
     return fallback('ERROR', cause instanceof Error ? cause.message : 'Unknown evaluation error')
   }
