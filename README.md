@@ -1,158 +1,114 @@
-# Switchboard
+<p align="center">
+  <img src="docs/logo.svg" width="76" alt="">
+</p>
 
-A multi-tenant feature flag platform: targeting rules, staged rollouts,
-per-environment configuration and an audit trail.
+<h1 align="center">Switchboard</h1>
 
-Built as a portfolio piece to show front-end work at depth — complex interactive
-state, accessibility, optimistic updates and a tested pure-logic core — on top
-of a backend that is real rather than mocked.
+<p align="center">
+  Feature flags with targeting rules, staged rollouts and an audit trail.<br>
+  <sub>Next.js 16 · React 19 · TypeScript · Postgres · Prisma 7</sub>
+</p>
 
----
+<br>
 
-## What it does
+Ship code behind a switch. Turn it on for your own team first, then 5% of
+traffic, then everyone, and keep a record of who changed what.
 
-- **Per-environment configuration.** One flag has independent state in
-  Development, Staging and Production. The selected environment lives in the
-  URL, so a link to a production flag is shareable.
-- **Targeting rules.** Ordered rules, first match wins. Conditions are ANDed
-  inside a rule; 15 operators covering strings, numbers, sets, presence and
-  regex.
-- **Staged rollouts.** Deterministic percentage bucketing, optionally by an
-  attribute like `accountId` so whole accounts move together instead of
-  individual users.
-- **Multivariate flags.** Not just booleans — string, number and JSON variants
-  for A/B/n tests.
-- **Roles.** Owner / Admin / Member / Viewer, enforced server-side on every
-  mutation, reflected in the UI so a Viewer sees why a control is disabled.
-- **Audit trail.** Who changed what, in which environment, with a before/after
-  diff. Filterable by action, environment and person, all held in the URL.
-- **SDK keys.** Generated per environment, shown once, stored only as a hash,
-  revocable.
+I wanted a portfolio project that behaves like software people actually use:
+several tenants, roles that really do restrict things, and a screen whose state
+is genuinely awkward to manage. The targeting engine is the part worth reading.
+
+![The flags list, showing per-environment state](docs/screenshots/flags-list.jpg)
 
 ## Running it
 
-Requires Node 24 (`.nvmrc` is provided; `nvm use` picks it up).
+Node 24, and there's an `.nvmrc` so `nvm use` handles it.
 
 ```bash
 nvm use
 npm install
 
-# Starts a local Postgres — no Docker or system install needed.
-# It prints DATABASE_URL and SHADOW_DATABASE_URL; paste both into .env.
-npm run db:dev
-
-cp .env.example .env     # then fill in the two URLs and AUTH_SECRET
-
+npm run db:dev          # local Postgres, no Docker. Prints two URLs.
+cp .env.example .env    # paste them in, plus an AUTH_SECRET
 npm run db:migrate
 npm run db:seed
 npm run dev
 ```
 
 Sign in with `ana@northwind.test` / `switchboard123`. The seed creates four
-users with different roles — sign in as `diego@northwind.test` (same password)
-to see the read-only Viewer experience.
+people on different roles; `diego@northwind.test` is a Viewer, so log in as him
+to see the read-only side of the UI.
 
-Any Postgres works instead of `db:dev`; drop a Neon, Supabase or RDS URL into
-`DATABASE_URL` and the rest is unchanged.
+If you'd rather point it at a real database, put a Neon or Supabase URL in
+`DATABASE_URL` and skip `db:dev`. Nothing else changes.
 
-| Command | What it does |
+| Command | |
 | --- | --- |
-| `npm run dev` | Dev server |
-| `npm run build` | Production build (runs `prisma generate` first) |
-| `npm test` | Vitest suite |
+| `npm run dev` | dev server |
+| `npm test` | the test suite |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run db:studio` | Prisma Studio |
-| `npm run db:reset` | Drop, re-migrate and re-seed |
+| `npm run db:reset` | drop, migrate, reseed |
 
-## How it is put together
+## How targeting works
 
-```
-src/
-  lib/flags/       Evaluation engine — pure, dependency-free, unit tested
-    types.ts       The targeting model
-    hash.ts        Murmur3 bucketing
-    evaluate.ts    The evaluator
-    schema.ts      Zod schemas guarding the Json columns
-  lib/members/     Who may change whom — pure, unit tested
-  server/
-    auth/          Password hashing, JWT session cookie, auth actions
-    tenancy/       Org scoping and the permission model
-    flags/         Mutations, each one scoped + permission-checked + audited
-    members/       Role changes and removals
-    settings/      Org, projects and SDK key generation
-  components/
-    ui/            Primitives over Radix
-    flags/         Feature components
-  app/             Routes (App Router)
-```
+A flag holds one configuration per environment. When something asks for a value,
+the evaluator walks it top to bottom:
 
-### Decisions worth explaining
+1. Flag off? Serve the off variant, stop.
+2. Walk the rules in order. First one whose conditions all match wins.
+3. Nothing matched? Serve the default, or bucket the context through a
+   percentage rollout.
 
-**The evaluator never throws.** A flag platform whose client can crash the
-application it is embedded in is worse than one that is briefly wrong. A
-malformed config degrades to the off variant and reports `reason: 'ERROR'`, so
-the caller always gets a value and the mistake is still visible.
+Conditions inside a rule are ANDed. If you want OR, add another rule. Fifteen
+operators cover strings, numbers, sets, presence and regex, and array attributes
+match if any element matches, except on the negative operators where `not_in`
+has to mean *none of these*.
 
-**Tolerant evaluator, strict writes.** Because the evaluator degrades instead of
-rejecting, it cannot be what keeps the database clean. Every write path runs the
-payload through Zod (`src/lib/flags/schema.ts`) before it reaches Prisma, and
-`updateTargeting` additionally cross-checks that every variant key a rule
-references actually exists on the flag — a relationship a schema cannot express.
+Rollouts bucket on a Murmur3 hash of the context, so the same user always lands
+in the same bucket. You can bucket on an attribute instead of the user, which is
+how you keep a whole account on one side of a split rather than splitting the
+account internally.
 
-**Tenant scoping is centralised, not per-query.** `requireOrg` and
-`requireProject` resolve the tenant from the URL slug *through the caller's
-membership*, and every later query filters on the resolved id. No mutation ever
-accepts an org or project id from the client. A missing membership returns 404
-rather than 403, because "this org exists but you cannot see it" leaks the
-customer list.
+![The targeting editor with the live evaluator](docs/screenshots/targeting.jpg)
 
-**The last owner cannot be removed or demoted.** That rule, and the rest of
-who-may-change-whom, lives in `src/lib/members/rules.ts` as pure functions
-rather than inline in a handler — an organization locking itself out is the
-kind of bug that only shows up on the path nobody reads. The count that guards
-it is read inside the same transaction as the write, so two owners leaving
-simultaneously cannot both see a count of two and both succeed. The UI runs the
-same functions, but only to explain a disabled control; the server check is the
-one that decides.
+The panel on the right runs the real evaluator in the browser against the saved
+config. Same function the server calls. It answers the question people actually
+have before a rollout, which is "what would *this* user get, and why".
 
-**SDK keys are hashed with SHA-256, not bcrypt.** bcrypt exists to make
-low-entropy secrets — passwords people choose — expensive to brute force. A
-generated key carries 256 bits of CSPRNG entropy, so there is nothing to brute
-force and a slow hash would only tax every SDK request. Passwords in this same
-app do use bcrypt, for the opposite reason.
+## Decisions I'd defend in an interview
 
-**Bucketing is Murmur3, not a cryptographic hash.** It has to be deterministic
-across the server, the SDK and the UI preview, and uniform enough that a 10%
-rollout really is ~10% — both of which Murmur3 gives at a fraction of the cost.
-It is not collision-resistant and is never used for anything security-bearing.
-There is a distribution test asserting the 10% case lands within 8.5–11.5%,
-which is what catches a hash that clusters.
+**The evaluator never throws.** A broken config degrades to the off variant and
+reports `reason: 'ERROR'`. A flag system that can crash the app embedding it is
+worse than one that's briefly wrong.
 
-**Sessions are stateless JWTs.** This buys edge-compatible middleware and no
-database round trip per request, and costs per-session revocation; the window is
-capped at seven days. Adding a `tokenVersion` column on `User` and checking it
-in `readSession` is the smallest change that restores "sign out everywhere" —
-noted in the code at the point where it would go.
+**So the strictness lives on the write side.** Zod guards every write to the
+JSON columns, and saving targeting also checks that every variant a rule
+mentions actually exists on the flag — a relationship no schema can express.
 
-**Optimistic toggles revert themselves.** `useOptimistic` holds the pending
-value only for the life of the transition. When the route revalidates, server
-state becomes the source of truth again, so a rejected write snaps back with no
-rollback code — only the reason has to be surfaced.
+**No mutation accepts an ID from the client.** `requireOrg` and `requireProject`
+resolve the tenant from the URL slug through the caller's membership, and every
+query after that filters on the resolved ID. Missing membership returns 404
+rather than 403, because "this org exists but you can't see it" tells a stranger
+who your customers are.
 
-### Accessibility
+**Three different hashes, on purpose.** Murmur3 for bucketing: needs to be fast
+and uniform, not collision-resistant. SHA-256 for SDK keys: 256 bits of CSPRNG
+entropy means there's nothing to brute force, and a slow hash would tax every
+request. Bcrypt for passwords, the one case it exists for.
 
-Not a retrofit; it is the reason several components are shaped the way they are.
+**The last owner can't be removed or demoted.** That rule and its siblings live
+in `src/lib/members/rules.ts` as tested pure functions, not inline in a handler.
+The owner count is read inside the same transaction as the write it guards, so
+two owners leaving simultaneously can't both see a count of two and both
+succeed.
 
-- Interactive components are built on Radix primitives, so focus management,
-  escape handling and ARIA wiring are correct rather than approximated.
-- `Field` uses a render-prop specifically so `aria-invalid` and
-  `aria-describedby` cannot be forgotten at a call site.
-- Disabled controls keep an explanation reachable — a `Viewer` hovering a
-  locked toggle is told why, through a wrapper, because a disabled control
-  receives no pointer events of its own.
-- Focus rings are `:focus-visible` only; `aria-current` marks the active nav
-  item; a skip link bypasses the sidebar; search results announce through a
-  live region; `prefers-reduced-motion` is honoured globally.
+**Accessibility shaped the components, not the other way round.** Radix
+underneath, so focus and ARIA are correct instead of approximated. `Field` uses
+a render prop so a call site can't forget `aria-describedby`. A disabled control
+receives no pointer events, so the tooltip explaining it hangs off a wrapper.
+Plus the usual: `:focus-visible` only, `aria-current`, a skip link, live regions,
+and `prefers-reduced-motion`.
 
 ## Tests
 
@@ -160,28 +116,41 @@ Not a retrofit; it is the reason several components are shaped the way they are.
 npm test
 ```
 
-75 tests, all against pure modules — no database, no rendering, no mocks:
+75 tests, no database and no mocks, aimed at the modules where the logic lives.
 
-- **The evaluator.** Operator semantics including array attributes and the
-  negative-operator case (`not_in` means *none of these*), fail-closed
-  behaviour on invalid regex and non-numeric comparisons, rollout stability and
-  distribution, and the degradation paths that must never throw.
-- **The targeting reducer.** Rule ordering is behaviour, not decoration, and
-  rollout weights have an invariant (exactly 100) worth asserting directly.
-- **Membership rules.** Every way an org could lock itself out.
-- **SDK key generation.** Uniqueness, prefix handling, and that a near miss
-  fails rather than matching on a prefix.
+The evaluator gets the most: operator semantics, fail-closed behaviour on bad
+regex and non-numeric input, rollout stability, and a distribution test that
+asserts a 10% rollout lands between 8.5% and 11.5% over 20k samples. That last
+one is what catches a hash that clusters. Then the targeting reducer, the
+membership rules, and SDK key generation.
 
-## Known gaps
+## Layout
 
-Honest list of what a production deployment would still need:
+```
+src/
+  lib/flags/       evaluation engine — pure, no dependencies
+  lib/members/     who may change whom — pure
+  server/
+    auth/          password hashing, JWT session cookie
+    tenancy/       org scoping and permissions
+    flags/         mutations: scoped, permission-checked, audited
+    members/       role changes and removals
+    settings/      org, projects, SDK key generation
+  components/ui/   primitives over Radix
+  app/             routes
+```
 
-- No SDK yet. The evaluator is written to be extracted into one (pure, no
-  imports from the app), but the delivery layer — polling or streaming config to
-  clients — is not built.
-- SDK keys can be created and revoked, but nothing authenticates against them
-  yet — there is no public evaluation endpoint for them to open.
+![The audit log](docs/screenshots/audit-log.jpg)
+
+## What's missing
+
+Being straight about it:
+
+- There's no SDK. The evaluator was written to be extracted into one, but
+  nothing delivers config to clients yet.
+- SDK keys can be created and revoked, but nothing authenticates against them,
+  because there's no public evaluation endpoint for them to open.
+- Adding a member requires them to already have an account. No email
+  invitations, and the dialog says so instead of pretending otherwise.
+- Environments are created with a project and can't be added or renamed after.
 - No scheduled or approval-gated changes.
-- Adding a member requires them to already have an account. Emailed invitations
-  are not built, and the dialog says so rather than pretending otherwise.
-- Environments are created with a project and cannot yet be added or renamed.
