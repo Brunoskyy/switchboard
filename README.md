@@ -76,42 +76,6 @@ The panel on the right runs the real evaluator in the browser against the saved
 config. Same function the server calls. It answers the question people actually
 have before a rollout, which is "what would *this* user get, and why".
 
-## Decisions I'd defend in an interview
-
-**The evaluator never throws.** A broken config degrades to the off variant and
-reports `reason: 'ERROR'`. A flag system that can crash the app embedding it is
-worse than one that's briefly wrong.
-
-**So the strictness lives on the write side.** Zod guards every write to the
-JSON columns, and saving targeting also checks that every variant a rule
-mentions actually exists on the flag — a relationship no schema can express.
-
-**No mutation accepts an ID from the client.** `requireOrg` and `requireProject`
-resolve the tenant from the URL slug through the caller's membership, and every
-query after that filters on the resolved ID. Missing membership returns 404
-rather than 403, because "this org exists but you can't see it" tells a stranger
-who your customers are.
-
-**Three different hashes, on purpose.** Murmur3 for bucketing: needs to be fast
-and uniform, not collision-resistant. SHA-256 for SDK keys: 256 bits of CSPRNG
-entropy means there's nothing to brute force, and a slow hash would tax every
-request. Bcrypt for passwords, the one case it exists for.
-
-**The last owner can't be removed or demoted.** That rule and its siblings live
-in `src/lib/members/rules.ts` as tested pure functions, not inline in a handler.
-Being inside a transaction isn't enough to make it safe, though: Prisma runs at
-READ COMMITTED and `count()` takes no locks, so two owners leaving at the same
-moment would each read two, delete different rows and both commit. The count
-runs as `SELECT … FOR UPDATE` over the owner rows, so the second transaction
-blocks, re-reads one, and gets refused.
-
-**Accessibility shaped the components, not the other way round.** Radix
-underneath, so focus and ARIA are correct instead of approximated. `Field` uses
-a render prop so a call site can't forget `aria-describedby`. A disabled control
-receives no pointer events, so the tooltip explaining it hangs off a wrapper.
-Plus the usual: `:focus-visible` only, `aria-current`, a skip link, live regions,
-and `prefers-reduced-motion`.
-
 ## Tests
 
 ```bash
