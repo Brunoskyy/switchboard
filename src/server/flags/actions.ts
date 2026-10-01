@@ -228,9 +228,10 @@ export async function updateTargeting(raw: unknown): Promise<ActionResult> {
 
     const flag = await db.flag.findFirst({
       where: { key: input.flagKey, projectId: scope.project.id },
-      select: { id: true, key: true, variants: { select: { key: true } } },
+      select: { id: true, key: true, archived: true, variants: { select: { key: true } } },
     })
     if (!flag) return { ok: false, error: 'Flag not found.' }
+    if (flag.archived) return { ok: false, error: 'This flag is archived. Restore it first.' }
 
     // Cross-check every variant the payload references against the flag's own
     // variants. Zod can validate the shape but not this relationship, and an
