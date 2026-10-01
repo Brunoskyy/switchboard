@@ -1,7 +1,6 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 
 import { Prisma } from '@/generated/prisma/client'
@@ -10,41 +9,10 @@ import { db } from '@/lib/db'
 import { describeTargetingChange } from '@/lib/flags/diff'
 import type { Rollout } from '@/lib/flags/types'
 import { FlagKeySchema, FlagRulesSchema, RolloutSchema } from '@/lib/flags/schema'
-import {
-  PermissionError,
-  assertCan,
-  requireEnvironment,
-  requireProject,
-} from '@/server/tenancy/scope'
-
-export interface ActionResult {
-  ok: boolean
-  error?: string
-  fieldErrors?: Record<string, string[]>
-}
+import { type ActionResult, toResult } from '@/server/action-result'
+import { assertCan, requireEnvironment, requireProject } from '@/server/tenancy/scope'
 
 const ok: ActionResult = { ok: true }
-
-/**
- * Turns a thrown error into a result the form can render.
- *
- * Permission and validation failures are expected outcomes and get a useful
- * message; anything else is a bug, so it is logged server-side and the client
- * gets a generic string rather than a stack trace.
- */
-function toResult(error: unknown): ActionResult {
-  // `redirect()` and `notFound()` work by throwing. Without this, an expired
-  // session would be caught here and shown as "something went wrong" forever
-  // instead of sending the user to the login page.
-  unstable_rethrow(error)
-
-  if (error instanceof PermissionError) return { ok: false, error: error.message }
-  if (error instanceof z.ZodError) {
-    return { ok: false, fieldErrors: z.flattenError(error).fieldErrors }
-  }
-  console.error('[flags/actions]', error)
-  return { ok: false, error: 'Something went wrong. Please try again.' }
-}
 
 /**
  * Revalidates both places a flag is rendered.
@@ -116,7 +84,7 @@ export async function toggleFlag(
     revalidateFlag(orgSlug, projectKey, flagKey)
     return ok
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'flags/actions')
   }
 }
 
@@ -206,7 +174,7 @@ export async function createFlag(raw: unknown): Promise<ActionResult & { flagKey
     revalidateFlag(input.orgSlug, input.projectKey, input.key)
     return { ok: true, flagKey: input.key }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'flags/actions')
   }
 }
 
@@ -306,7 +274,7 @@ export async function updateTargeting(raw: unknown): Promise<ActionResult> {
     revalidateFlag(input.orgSlug, input.projectKey, input.flagKey)
     return ok
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'flags/actions')
   }
 }
 
@@ -347,6 +315,6 @@ export async function setFlagArchived(raw: unknown): Promise<ActionResult> {
     revalidateFlag(input.orgSlug, input.projectKey, input.flagKey)
     return ok
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'flags/actions')
   }
 }

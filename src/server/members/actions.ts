@@ -1,32 +1,13 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 
 import { AuditAction, Role } from '@/generated/prisma/enums'
 import { db } from '@/lib/db'
 import { checkRemoval, checkRoleChange } from '@/lib/members/rules'
-import { PermissionError, requireOrg } from '@/server/tenancy/scope'
-
-export interface ActionResult {
-  ok: boolean
-  error?: string
-  fieldErrors?: Record<string, string[]>
-}
-
-function toResult(error: unknown): ActionResult {
-  // `redirect()` and `notFound()` signal by throwing; catching them here would
-  // turn an expired session into a permanent generic error.
-  unstable_rethrow(error)
-
-  if (error instanceof PermissionError) return { ok: false, error: error.message }
-  if (error instanceof z.ZodError) {
-    return { ok: false, fieldErrors: z.flattenError(error).fieldErrors }
-  }
-  console.error('[members/actions]', error)
-  return { ok: false, error: 'Something went wrong. Please try again.' }
-}
+import { type ActionResult, toResult } from '@/server/action-result'
+import { requireOrg } from '@/server/tenancy/scope'
 
 /**
  * Counts the org's owners and holds a lock on those rows until the surrounding
@@ -124,7 +105,7 @@ export async function changeMemberRole(raw: unknown): Promise<ActionResult> {
     revalidatePath(`/${input.orgSlug}/members`)
     return { ok: true }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'members/actions')
   }
 }
 
@@ -174,7 +155,7 @@ export async function removeMember(raw: unknown): Promise<ActionResult> {
     revalidatePath(`/${input.orgSlug}/members`)
     return { ok: true }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'members/actions')
   }
 }
 
@@ -253,6 +234,6 @@ export async function addMember(raw: unknown): Promise<ActionResult> {
     revalidatePath(`/${input.orgSlug}/members`)
     return { ok: true }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'members/actions')
   }
 }

@@ -1,32 +1,13 @@
 'use server'
 
 import { revalidatePath } from 'next/cache'
-import { unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 
 import { AuditAction } from '@/generated/prisma/enums'
 import { db } from '@/lib/db'
-import { PermissionError, assertCan, requireOrg, requireProject } from '@/server/tenancy/scope'
+import { type ActionResult, toResult } from '@/server/action-result'
+import { assertCan, requireOrg, requireProject } from '@/server/tenancy/scope'
 import { generateSdkKey } from '@/server/settings/keys'
-
-export interface ActionResult {
-  ok: boolean
-  error?: string
-  fieldErrors?: Record<string, string[]>
-}
-
-function toResult(error: unknown): ActionResult {
-  // `redirect()` and `notFound()` signal by throwing; catching them here would
-  // turn an expired session into a permanent generic error.
-  unstable_rethrow(error)
-
-  if (error instanceof PermissionError) return { ok: false, error: error.message }
-  if (error instanceof z.ZodError) {
-    return { ok: false, fieldErrors: z.flattenError(error).fieldErrors }
-  }
-  console.error('[settings/actions]', error)
-  return { ok: false, error: 'Something went wrong. Please try again.' }
-}
 
 const RenameSchema = z.object({
   orgSlug: z.string().min(1),
@@ -61,7 +42,7 @@ export async function renameOrganization(raw: unknown): Promise<ActionResult> {
     revalidatePath(`/${input.orgSlug}`, 'layout')
     return { ok: true }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'settings/actions')
   }
 }
 
@@ -136,7 +117,7 @@ export async function createProject(
     revalidatePath(`/${input.orgSlug}`, 'layout')
     return { ok: true, projectKey: input.key }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'settings/actions')
   }
 }
 
@@ -196,7 +177,7 @@ export async function createSdkKey(
     // so a lost key has to be revoked and replaced rather than recovered.
     return { ok: true, plaintext: generated.plaintext }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'settings/actions')
   }
 }
 
@@ -238,6 +219,6 @@ export async function revokeSdkKey(raw: unknown): Promise<ActionResult> {
     revalidatePath(`/${input.orgSlug}/settings`)
     return { ok: true }
   } catch (error) {
-    return toResult(error)
+    return toResult(error, 'settings/actions')
   }
 }
