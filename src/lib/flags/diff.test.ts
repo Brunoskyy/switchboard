@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
-import { describeRollout, rulesFingerprint } from './diff'
+import { describeRollout, describeTargetingChange, rulesFingerprint } from './diff'
+import type { TargetingSnapshot } from './diff'
 import type { Rule } from './types'
 
 const rule = (overrides: Partial<Rule> = {}): Rule => ({
@@ -112,5 +113,63 @@ describe('describeRollout', () => {
 
   it('returns null when every weight is zero', () => {
     expect(describeRollout({ seed: 's', buckets: [{ variantKey: 'on', weight: 0 }] })).toBeNull()
+  })
+})
+
+describe('describeTargetingChange', () => {
+  const saved: TargetingSnapshot = {
+    rules: [rule()],
+    rollout: null,
+    defaultVariantKey: 'off',
+    offVariantKey: 'off',
+  }
+
+  it('records a default-variant-only change instead of an empty diff', () => {
+    const change = describeTargetingChange(saved, { ...saved, defaultVariantKey: 'on' })
+    expect(change.diff).toEqual({ defaultVariant: { from: 'off', to: 'on' } })
+    expect(change.unchanged).toBe(false)
+    expect(change.rolloutOnly).toBe(false)
+  })
+
+  it('records an off-variant-only change', () => {
+    const change = describeTargetingChange(saved, { ...saved, offVariantKey: 'on' })
+    expect(change.diff).toEqual({ offVariant: { from: 'off', to: 'on' } })
+  })
+
+  it('flags a change to the rollout alone as rollout-only', () => {
+    const change = describeTargetingChange(saved, {
+      ...saved,
+      rollout: { seed: 's', buckets: [{ variantKey: 'on', weight: 100 }] },
+    })
+    expect(change.diff).toEqual({ rollout: { from: null, to: '100% on' } })
+    expect(change.rolloutOnly).toBe(true)
+  })
+
+  it('is not rollout-only when something else moved with it', () => {
+    const change = describeTargetingChange(saved, {
+      ...saved,
+      rollout: { seed: 's', buckets: [{ variantKey: 'on', weight: 100 }] },
+      defaultVariantKey: 'on',
+    })
+    expect(change.rolloutOnly).toBe(false)
+  })
+
+  it('counts rules when the rules change', () => {
+    const change = describeTargetingChange(saved, { ...saved, rules: [] })
+    expect(change.diff).toEqual({ rules: { from: 1, to: 0 } })
+  })
+
+  it('reports nothing when only editor-minted ids differ', () => {
+    const withIds = [{ ...rule(), conditions: [{ ...rule().conditions[0], id: 'cond-x' }] }]
+    expect(describeTargetingChange(saved, { ...saved, rules: withIds }).unchanged).toBe(true)
+  })
+
+  it('treats a missing previous config as empty', () => {
+    const change = describeTargetingChange(null, saved)
+    expect(change.diff).toEqual({
+      rules: { from: 0, to: 1 },
+      defaultVariant: { from: null, to: 'off' },
+      offVariant: { from: null, to: 'off' },
+    })
   })
 })

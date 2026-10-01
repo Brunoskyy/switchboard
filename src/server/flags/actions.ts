@@ -7,7 +7,7 @@ import { z } from 'zod'
 import { Prisma } from '@/generated/prisma/client'
 import { AuditAction, FlagType } from '@/generated/prisma/enums'
 import { db } from '@/lib/db'
-import { describeRollout, rulesFingerprint } from '@/lib/flags/diff'
+import { describeTargetingChange } from '@/lib/flags/diff'
 import type { Rollout } from '@/lib/flags/types'
 import { FlagKeySchema, FlagRulesSchema, RolloutSchema } from '@/lib/flags/schema'
 import {
@@ -254,52 +254,53 @@ export async function updateTargeting(raw: unknown): Promise<ActionResult> {
 
     const previous = await db.flagConfig.findUnique({
       where: { flagId_environmentId: { flagId: flag.id, environmentId: environment.id } },
-      select: { rules: true, rollout: true },
+      select: { rules: true, rollout: true, defaultVariantKey: true, offVariantKey: true },
     })
 
-    const previousRuleCount = Array.isArray(previous?.rules) ? previous.rules.length : 0
-    const previousRollout = describeRollout((previous?.rollout ?? null) as Rollout | null)
-    const nextRollout = describeRollout(input.rollout)
-
-    const rulesChanged = rulesFingerprint(previous?.rules) !== rulesFingerprint(input.rules)
-    const rolloutChanged = previousRollout !== nextRollout
+    const change = describeTargetingChange(
+      previous ? { ...previous, rollout: previous.rollout as Rollout | null } : null,
+      input,
+    )
 
     // Report what actually moved. Always writing RULES_CHANGED made the audit
     // log's "Rollout changed" filter an option no real event could match.
-    const action =
-      rolloutChanged && !rulesChanged ? AuditAction.ROLLOUT_CHANGED : AuditAction.RULES_CHANGED
+    const action = change.rolloutOnly ? AuditAction.ROLLOUT_CHANGED : AuditAction.RULES_CHANGED
 
-    const diff = {
-      ...(rulesChanged ? { rules: { from: previousRuleCount, to: input.rules.length } } : {}),
-      ...(rolloutChanged ? { rollout: { from: previousRollout, to: nextRollout } } : {}),
+    const update = db.flagConfig.update({
+      where: { flagId_environmentId: { flagId: flag.id, environmentId: environment.id } },
+      data: {
+        rules: input.rules,
+        // Prisma reads `undefined` as "leave this column alone", so turning a
+        // rollout off has to say DbNull explicitly or the old split survives
+        // the save.
+        rollout: input.rollout ?? Prisma.DbNull,
+        defaultVariantKey: input.defaultVariantKey,
+        offVariantKey: input.offVariantKey,
+      },
+    })
+
+    // A save that changes nothing a reader would notice (only editor-minted
+    // ids, say) still writes, but an audit event saying nothing happened is
+    // noise.
+    if (change.unchanged) {
+      await update
+    } else {
+      await db.$transaction([
+        update,
+        db.auditEvent.create({
+          data: {
+            orgId: scope.org.id,
+            actorId: scope.user.id,
+            action,
+            entityType: 'FlagConfig',
+            entityId: flag.id,
+            entityLabel: flag.key,
+            environmentKey: environment.key,
+            diff: change.diff,
+          },
+        }),
+      ])
     }
-
-    await db.$transaction([
-      db.flagConfig.update({
-        where: { flagId_environmentId: { flagId: flag.id, environmentId: environment.id } },
-        data: {
-          rules: input.rules,
-          // Prisma reads `undefined` as "leave this column alone", so turning a
-          // rollout off has to say DbNull explicitly or the old split survives
-          // the save.
-          rollout: input.rollout ?? Prisma.DbNull,
-          defaultVariantKey: input.defaultVariantKey,
-          offVariantKey: input.offVariantKey,
-        },
-      }),
-      db.auditEvent.create({
-        data: {
-          orgId: scope.org.id,
-          actorId: scope.user.id,
-          action,
-          entityType: 'FlagConfig',
-          entityId: flag.id,
-          entityLabel: flag.key,
-          environmentKey: environment.key,
-          diff,
-        },
-      }),
-    ])
 
     revalidateFlag(input.orgSlug, input.projectKey, input.flagKey)
     return ok
