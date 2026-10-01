@@ -19,6 +19,11 @@ const RANK: Record<Role, number> = {
   [Role.OWNER]: 3,
 }
 
+/** The one ordering of roles; permission checks in tenancy/scope.ts use it too. */
+export function hasAtLeast(role: Role, minimum: Role): boolean {
+  return RANK[role] >= RANK[minimum]
+}
+
 export interface MemberActionContext {
   /** Role of the person performing the action. */
   actorRole: Role
@@ -31,7 +36,7 @@ export interface MemberActionContext {
 }
 
 export function canManageMembers(actorRole: Role): boolean {
-  return RANK[actorRole] >= RANK[Role.ADMIN]
+  return hasAtLeast(actorRole, Role.ADMIN)
 }
 
 export function checkRoleChange(

@@ -4,6 +4,7 @@ import { notFound, redirect } from 'next/navigation'
 
 import { db } from '@/lib/db'
 import { Role } from '@/generated/prisma/enums'
+import { hasAtLeast } from '@/lib/members/rules'
 import { readSession } from '@/server/auth/session'
 
 /**
@@ -19,17 +20,6 @@ import { readSession } from '@/server/auth/session'
  * A missing membership is reported as 404, not 403: telling a stranger that an
  * org exists but they cannot see it leaks the customer list.
  */
-
-const ROLE_RANK: Record<Role, number> = {
-  [Role.VIEWER]: 0,
-  [Role.MEMBER]: 1,
-  [Role.ADMIN]: 2,
-  [Role.OWNER]: 3,
-}
-
-export function hasAtLeast(role: Role, minimum: Role): boolean {
-  return ROLE_RANK[role] >= ROLE_RANK[minimum]
-}
 
 export const PERMISSIONS = {
   /** Flip a flag on/off and edit its targeting in an environment. */
