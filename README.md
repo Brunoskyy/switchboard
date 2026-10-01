@@ -11,99 +11,99 @@
 
 <br>
 
-Ship code behind a switch. Turn it on for your own team first, then 5% of
-traffic, then everyone, and keep a record of who changed what.
+Ship code behind a switch: turn it on for your own team, then 5% of traffic,
+then everyone, with a record of who changed what. The name comes from the old
+telephone switchboard, where an operator routed each call to the right line;
+here the flags route each user to the right variant.
 
-I wanted a portfolio project that behaves like software people actually use:
-several tenants, roles that really do restrict things, and a screen whose state
-is genuinely awkward to manage. The targeting engine is the part worth reading.
+I wanted something that behaves like real software: several tenants, roles
+that actually restrict things, and a screen whose state is awkward to manage.
+The targeting engine is the part worth reading.
 
 ![The flags list, showing per-environment state](docs/screenshots/flags-list.jpg)
 
 ## Running it
 
-Node 24, and there's an `.nvmrc` so `nvm use` handles it.
+You need Node 24 (`nvm use` reads the `.nvmrc`). No Docker: the database is
+the local Postgres that Prisma runs for you. It takes two terminals.
 
-```bash
-nvm use
-npm install
+1. Clone and install:
 
-npm run db:dev          # local Postgres, no Docker. Prints two URLs.
-cp .env.example .env    # paste them in, plus an AUTH_SECRET
-npm run db:migrate
-npm run db:seed
-npm run dev
-```
+   ```bash
+   git clone https://github.com/Brunoskyy/switchboard.git && cd switchboard
+   nvm use
+   npm install
+   ```
 
-Sign in with `ana@northwind.test` / `switchboard123`. The seed creates four
-people on different roles; `diego@northwind.test` is a Viewer, so log in as him
-to see the read-only side of the UI.
+2. **Terminal 1, from the repo root:** start the database and leave it running.
+   It prints a `DATABASE_URL`.
 
-If you'd rather point it at a real database, put a Neon or Supabase URL in
-`DATABASE_URL` and skip `db:dev`. Nothing else changes.
+   ```bash
+   npm run db:dev
+   ```
 
-| Command | |
+3. **Terminal 2, from the repo root:** create `.env`, paste that URL into
+   `DATABASE_URL` and set `AUTH_SECRET` (any random string, for example the
+   output of `openssl rand -base64 32`). Then migrate, seed and start the app:
+
+   ```bash
+   cp .env.example .env
+   npm run db:migrate
+   npm run db:seed
+   npm run dev
+   ```
+
+4. Open http://localhost:3000 and sign in as `ana@northwind.test` /
+   `switchboard123`. `diego@northwind.test` (same password) is a Viewer, for
+   the read-only side of the UI.
+
+To stop, press Ctrl+C in both terminals. `npm run db:reset` drops, migrates
+and reseeds the database. Any hosted Postgres (Neon, Supabase) works too: put
+its URL in `DATABASE_URL` and skip step 2.
+
+| Command (repo root) | |
 | --- | --- |
-| `npm run dev` | dev server |
 | `npm test` | the test suite |
 | `npm run typecheck` | `tsc --noEmit` |
+| `npm run lint` | ESLint |
 | `npm run db:studio` | Prisma Studio |
-| `npm run db:reset` | drop, migrate, reseed |
 
 ## How targeting works
 
-A flag holds one configuration per environment. When something asks for a value,
-the evaluator walks it top to bottom:
+A flag holds one configuration per environment. The evaluator walks it top to
+bottom:
 
-1. Flag off? Serve the off variant, stop.
-2. Walk the rules in order. First one whose conditions all match wins.
+1. Flag off? Serve the off variant.
+2. Rules in order; the first one whose conditions all match wins.
 3. Nothing matched? Serve the default, or bucket the context through a
    percentage rollout.
 
-Conditions inside a rule are ANDed. If you want OR, add another rule. Fifteen
-operators cover strings, numbers, sets, presence and regex, and array attributes
-match if any element matches, except on the negative operators where `not_in`
-has to mean *none of these*.
-
-Rollouts bucket on a Murmur3 hash of the context, so the same user always lands
-in the same bucket. You can bucket on an attribute instead of the user, which is
-how you keep a whole account on one side of a split rather than splitting the
-account internally.
+Conditions in a rule are ANDed; for OR, add another rule. Fifteen operators
+cover strings, numbers, sets, presence and regex. Rollouts bucket on a Murmur3
+hash, so the same user always lands in the same bucket, and you can bucket on
+an attribute (an account id) to keep a whole account on one side of a split.
 
 ![The targeting editor with the live evaluator](docs/screenshots/targeting.jpg)
 
-The panel on the right runs the real evaluator in the browser against the saved
-config. Same function the server calls. It answers the question people actually
-have before a rollout, which is "what would *this* user get, and why".
+The panel on the right runs the same evaluator the server calls, against the
+saved config, and answers "what would *this* user get, and why".
 
 ## Tests
 
-```bash
-npm test
-```
-
-88 tests, no database and no mocks, aimed at the modules where the logic lives.
-
-The evaluator gets the most: operator semantics, fail-closed behaviour on bad
-regex and non-numeric input, rollout stability, and a distribution test that
-asserts a 10% rollout lands between 8.5% and 11.5% over 20k samples. That last
-one is what catches a hash that clusters. Then the targeting reducer, the
-membership rules, SDK key generation, and the config diffing — which has two
-traps worth pinning down, since `jsonb` reorders keys on write and the editor
-mints condition ids on load.
+88 tests, no database and no mocks, aimed at where the logic lives: operator
+semantics, fail-closed behaviour on bad input, rollout stability, and a
+distribution test that asserts a 10% rollout lands between 8.5% and 11.5% over
+20k samples (it catches a hash that clusters). Also the targeting reducer, the
+membership rules, SDK key generation and config diffing, where `jsonb`
+reordering keys on write is a trap worth pinning down.
 
 ## Layout
 
 ```
 src/
-  lib/flags/       evaluation engine — pure, no dependencies
-  lib/members/     who may change whom — pure
-  server/
-    auth/          password hashing, JWT session cookie
-    tenancy/       org scoping and permissions
-    flags/         mutations: scoped, permission-checked, audited
-    members/       role changes and removals
-    settings/      org, projects, SDK key generation
+  lib/flags/       evaluation engine, pure
+  lib/members/     who may change whom, pure
+  server/          auth, tenancy, and the audited mutations
   components/ui/   primitives over Radix
   app/             routes
 ```
@@ -112,13 +112,8 @@ src/
 
 ## What's missing
 
-Being straight about it:
-
-- There's no SDK. The evaluator was written to be extracted into one, but
-  nothing delivers config to clients yet.
-- SDK keys can be created and revoked, but nothing authenticates against them,
-  because there's no public evaluation endpoint for them to open.
-- Adding a member requires them to already have an account. No email
-  invitations, and the dialog says so instead of pretending otherwise.
-- Environments are created with a project and can't be added or renamed after.
+- No SDK yet: the evaluator is ready to be extracted, but nothing delivers
+  config to clients, so SDK keys exist without an endpoint to use them.
+- Members must already have an account; there are no email invitations.
+- Environments can't be added or renamed after a project is created.
 - No scheduled or approval-gated changes.
