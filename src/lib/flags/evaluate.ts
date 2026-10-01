@@ -48,19 +48,36 @@ function asNumber(value: unknown): number {
   return Number.NaN
 }
 
+/**
+ * Equality for `eq`, `neq`, `in` and `not_in`.
+ *
+ * A number and the string it prints as are the same value. Contexts arrive
+ * with whatever types the caller's own data has — a zip code is a string in
+ * one service and a number in the next — and a condition value typed into the
+ * editor carries no reliable type either. Strict `===` made `zip: "12345"`
+ * silently miss a condition saved as `12345`. Booleans get the same treatment
+ * for `"true"`/`"false"`. A number never equals a boolean.
+ */
+function sameValue(a: AttributeValue, b: AttributeValue): boolean {
+  if (typeof a === typeof b) return a === b
+  if (typeof a === 'string') return a === String(b)
+  if (typeof b === 'string') return b === String(a)
+  return false
+}
+
 function matchesScalar(actual: AttributeValue, condition: Condition): boolean {
   const { operator, values } = condition
   const first = values[0]
 
   switch (operator) {
     case 'eq':
-      return actual === first
+      return first !== undefined && sameValue(actual, first)
     case 'neq':
-      return actual !== first
+      return first === undefined || !sameValue(actual, first)
     case 'in':
-      return values.includes(actual)
+      return values.some((v) => sameValue(actual, v))
     case 'not_in':
-      return !values.includes(actual)
+      return !values.some((v) => sameValue(actual, v))
     case 'contains':
       return typeof actual === 'string' && values.some((v) => actual.includes(String(v)))
     case 'not_contains':

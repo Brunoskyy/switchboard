@@ -13,7 +13,8 @@ import {
   SelectValue,
 } from '@/components/ui/select'
 import { OPERATORS, OPERATOR_LABELS, PRESENCE_OPERATORS } from '@/lib/flags/schema'
-import type { AttributeValue, Condition, Operator } from '@/lib/flags/types'
+import type { Condition, Operator } from '@/lib/flags/types'
+import { coerceValue, parseValueList } from '@/lib/flags/values'
 
 /** `exists` / `not_exists` take no values, so the input is hidden for them. */
 function takesValues(operator: Operator): boolean {
@@ -31,23 +32,6 @@ function takesValues(operator: Operator): boolean {
  */
 function takesList(operator: Operator): boolean {
   return operator === 'in' || operator === 'not_in'
-}
-
-/** Numbers stay numbers so `gt`/`lt` compare numerically, not lexically. */
-function coerce(raw: string): AttributeValue {
-  if (raw === 'true') return true
-  if (raw === 'false') return false
-
-  const asNumber = Number(raw)
-  return raw.trim() !== '' && !Number.isNaN(asNumber) ? asNumber : raw
-}
-
-function parseList(raw: string): AttributeValue[] {
-  return raw
-    .split(',')
-    .map((part) => part.trim())
-    .filter((part) => part.length > 0)
-    .map(coerce)
 }
 
 interface ConditionRowProps {
@@ -145,7 +129,7 @@ export function ConditionRow({
               onBlur={() => setEditingList(false)}
               onChange={(event) => {
                 setListText(event.target.value)
-                onChange({ values: parseList(event.target.value) })
+                onChange({ values: parseValueList(event.target.value) })
               }}
               placeholder="comma, separated"
               disabled={disabled}
@@ -157,7 +141,7 @@ export function ConditionRow({
               value={singleValue}
               onChange={(event) =>
                 onChange({
-                  values: event.target.value === '' ? [] : [coerce(event.target.value)],
+                  values: event.target.value === '' ? [] : [coerceValue(event.target.value)],
                 })
               }
               placeholder={condition.operator === 'matches' ? '^prefix-.*$' : 'value'}

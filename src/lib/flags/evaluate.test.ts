@@ -59,6 +59,41 @@ describe('evaluateCondition', () => {
     expect(evaluateCondition(condition, ctx('u', { roles: ['member', 'admin'] }))).toBe(false)
   })
 
+  it('treats a number and its string form as equal for eq', () => {
+    // The editor saves "12345" as a number; SDKs often send zip codes as strings.
+    const condition = { attribute: 'zip', operator: 'eq' as const, values: [12345] }
+    expect(evaluateCondition(condition, ctx('u', { zip: '12345' }))).toBe(true)
+    expect(evaluateCondition(condition, ctx('u', { zip: 12345 }))).toBe(true)
+    expect(evaluateCondition(condition, ctx('u', { zip: '12346' }))).toBe(false)
+
+    const asString = { attribute: 'zip', operator: 'eq' as const, values: ['12345'] }
+    expect(evaluateCondition(asString, ctx('u', { zip: 12345 }))).toBe(true)
+  })
+
+  it('applies the same equality to in, not_in and neq', () => {
+    const inList = { attribute: 'zip', operator: 'in' as const, values: [10001, 94105] }
+    expect(evaluateCondition(inList, ctx('u', { zip: '94105' }))).toBe(true)
+
+    const notIn = { attribute: 'zip', operator: 'not_in' as const, values: [10001, 94105] }
+    expect(evaluateCondition(notIn, ctx('u', { zip: '94105' }))).toBe(false)
+    expect(evaluateCondition(notIn, ctx('u', { zip: '60601' }))).toBe(true)
+
+    const neq = { attribute: 'zip', operator: 'neq' as const, values: [94105] }
+    expect(evaluateCondition(neq, ctx('u', { zip: '94105' }))).toBe(false)
+  })
+
+  it('compares by printed form, so a leading zero still matters', () => {
+    const condition = { attribute: 'zip', operator: 'eq' as const, values: ['02134'] }
+    expect(evaluateCondition(condition, ctx('u', { zip: 2134 }))).toBe(false)
+    expect(evaluateCondition(condition, ctx('u', { zip: '02134' }))).toBe(true)
+  })
+
+  it('matches a boolean against its string form but never against a number', () => {
+    const condition = { attribute: 'beta', operator: 'eq' as const, values: [true] }
+    expect(evaluateCondition(condition, ctx('u', { beta: 'true' }))).toBe(true)
+    expect(evaluateCondition(condition, ctx('u', { beta: 1 }))).toBe(false)
+  })
+
   it('compares numerically for gt/lte, coercing numeric strings', () => {
     const gt = { attribute: 'seats', operator: 'gt' as const, values: [10] }
     expect(evaluateCondition(gt, ctx('u', { seats: 25 }))).toBe(true)
