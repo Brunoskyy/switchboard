@@ -90,12 +90,13 @@ saved config, and answers "what would *this* user get, and why".
 
 ## Tests
 
-88 tests, no database and no mocks, aimed at where the logic lives: operator
-semantics, fail-closed behaviour on bad input, rollout stability, and a
-distribution test that asserts a 10% rollout lands between 8.5% and 11.5% over
-20k samples (it catches a hash that clusters). Also the targeting reducer, the
-membership rules, SDK key generation and config diffing, where `jsonb`
-reordering keys on write is a trap worth pinning down.
+128 tests, no database and no mocks, aimed at where the logic lives: operator
+semantics, fail-closed behaviour on bad input (including regexes that would
+backtrack catastrophically), rollout stability, and a distribution test that
+asserts a 10% rollout lands between 8.5% and 11.5% over 20k samples (it catches
+a hash that clusters). Also the targeting reducer, the membership rules, SDK
+key generation and config diffing, where `jsonb` reordering keys on write is a
+trap worth pinning down.
 
 ## Layout
 
