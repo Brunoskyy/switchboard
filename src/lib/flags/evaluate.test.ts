@@ -117,6 +117,18 @@ describe('evaluateCondition', () => {
     expect(evaluateCondition(condition, ctx('u', { email: 'a'.repeat(600) }))).toBe(false)
   })
 
+  it('matches a negated condition when the attribute is missing', () => {
+    // "country is not BR" is true for a context with no country at all.
+    const condition = {
+      attribute: 'country',
+      operator: 'eq' as const,
+      values: ['BR'],
+      negate: true,
+    }
+    expect(evaluateCondition(condition, ctx('u'))).toBe(true)
+    expect(evaluateCondition(condition, ctx('u', { country: null }))).toBe(true)
+  })
+
   it('inverts the outcome when negate is set', () => {
     const condition = {
       attribute: 'country',
@@ -184,6 +196,15 @@ describe('resolveRollout', () => {
     expect(withSeedA).not.toEqual(withSeedB)
   })
 
+  it('buckets the same user independently for different flags', () => {
+    // Without the flag key in the hash, everyone in the first 10% of one
+    // rollout would be in the first 10% of every rollout sharing its seed.
+    const identities = Array.from({ length: 200 }, (_, i) => `user-${i}`)
+    const forFlagA = identities.map((id) => resolveRollout(rollout, 'flag-a', ctx(id)))
+    const forFlagB = identities.map((id) => resolveRollout(rollout, 'flag-b', ctx(id)))
+    expect(forFlagA.map(served)).not.toEqual(forFlagB.map(served))
+  })
+
   it('distributes roughly according to the declared weights', () => {
     const tenPercent: Rollout = {
       seed: 'dist',
@@ -212,6 +233,13 @@ describe('bucketFor', () => {
       expect(bucket).toBeGreaterThanOrEqual(0)
       expect(bucket).toBeLessThan(100)
     }
+  })
+
+  it('depends on the flag key, not just the seed and identity', () => {
+    const differs = Array.from({ length: 50 }, (_, i) => `user-${i}`).some(
+      (id) => bucketFor('seed', 'flag-a', id) !== bucketFor('seed', 'flag-b', id),
+    )
+    expect(differs).toBe(true)
   })
 
   it('handles non-ASCII identities without collapsing', () => {
