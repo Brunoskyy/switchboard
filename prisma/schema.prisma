@@ -1,6 +1,6 @@
 // Switchboard — feature flag platform
 // Tenancy model: Organization is the tenant boundary. Every query that reaches
-// user data must be scoped through Membership; see src/server/auth/scope.ts.
+// user data must be scoped through Membership; see src/server/tenancy/scope.ts.
 
 generator client {
   provider = "prisma-client"

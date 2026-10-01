@@ -15,9 +15,9 @@ export interface SessionPayload {
  * Sessions are stateless JWTs in an httpOnly cookie rather than rows in a
  * Session table.
  *
- * Tradeoff, stated plainly: this buys edge-compatible middleware and no DB
- * round trip per request, and costs the ability to revoke a single session
- * before it expires. The window is capped at 7 days. A product that needs
+ * Tradeoff, stated plainly: this buys a session check with no DB round trip
+ * per request, and costs the ability to revoke a single session before it
+ * expires. The window is capped at 7 days. A product that needs
  * "sign out everywhere" should add a `tokenVersion` column on User and check
  * it here — that is the smallest change that restores revocation.
  */
