@@ -1,5 +1,7 @@
 import { z } from 'zod'
 
+import { patternProblem } from './regex'
+
 /**
  * Write-side validation for the Json columns on FlagConfig.
  *
@@ -63,22 +65,11 @@ export const ConditionSchema = z
       (PRESENCE_OPERATORS as readonly string[]).includes(c.operator) || c.values.length > 0,
     { message: 'This operator needs at least one value', path: ['values'] },
   )
-  .refine((c) => c.operator !== 'matches' || String(c.values[0] ?? '').length <= 512, {
-    message: 'Regex patterns are capped at 512 characters',
-    path: ['values'],
+  .superRefine((c, ctx) => {
+    if (c.operator !== 'matches') return
+    const problem = patternProblem(String(c.values[0] ?? ''))
+    if (problem) ctx.addIssue({ code: 'custom', message: problem, path: ['values'] })
   })
-  .refine(
-    (c) => {
-      if (c.operator !== 'matches') return true
-      try {
-        new RegExp(String(c.values[0] ?? ''))
-        return true
-      } catch {
-        return false
-      }
-    },
-    { message: 'Not a valid regular expression', path: ['values'] },
-  )
 
 export const RolloutSchema = z
   .object({

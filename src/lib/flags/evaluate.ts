@@ -1,4 +1,5 @@
 import { bucketFor } from './hash'
+import { MAX_MATCH_INPUT_LENGTH, MAX_PATTERN_LENGTH, hasNestedQuantifier } from './regex'
 import type {
   AttributeValue,
   Condition,
@@ -22,18 +23,6 @@ export interface EvaluableConfig {
   rules: readonly Rule[]
   rollout: Rollout | null
 }
-
-/**
- * Longest regex we will compile for a `matches` condition.
- *
- * Patterns are authored by org admins in the dashboard, never by end users, so
- * the threat model is a careless teammate rather than an attacker. Still, a
- * catastrophically backtracking pattern would stall evaluation for everyone in
- * the environment, so we cap length and fail the condition closed. A hard
- * timeout would need a worker or the RegExp engine to support one; neither is
- * worth it at this length limit.
- */
-const MAX_PATTERN_LENGTH = 512
 
 function toComparable(value: unknown): AttributeValue | undefined {
   if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
@@ -99,9 +88,12 @@ function matchesScalar(actual: AttributeValue, condition: Condition): boolean {
       return a <= b
     }
     case 'matches': {
-      if (typeof actual !== 'string') return false
+      if (typeof actual !== 'string' || actual.length > MAX_MATCH_INPUT_LENGTH) return false
       const pattern = String(first ?? '')
+      // Fails closed on anything the schema would refuse, including configs
+      // saved before a check existed. See regex.ts for why.
       if (pattern.length === 0 || pattern.length > MAX_PATTERN_LENGTH) return false
+      if (hasNestedQuantifier(pattern)) return false
       try {
         return new RegExp(pattern).test(actual)
       } catch {
